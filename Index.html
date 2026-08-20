@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Capybara Block Breaker · Direct Touch</title>
+    <title>Capybara Block Breaker – Two Modes</title>
     <style>
         :root { --bg: #1a1a2e; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -15,6 +15,39 @@
             height: 100vh; height: 100dvh;
             overflow: hidden; font-family: 'Segoe UI', system-ui, sans-serif;
             touch-action: none; -webkit-user-select: none; user-select: none;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .menu-bar {
+            display: flex;
+            gap: 10px;
+            z-index: 20;
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .menu-bar button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 20px;
+            background: #4ECDC4;
+            color: #1a1a2e;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 14px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        }
+        .menu-bar button.active {
+            background: #FFE66D;
+            color: #1a1a2e;
+        }
+        .game-container {
+            position: relative;
+            display: none;
+        }
+        .game-container.active {
+            display: block;
         }
         .game-wrapper {
             position: relative;
@@ -26,492 +59,1092 @@
             cursor: grab;
         }
         canvas:active { cursor: grabbing; }
+        .settings-panel {
+            position: absolute;
+            top: 10px; left: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0,0,0,0.6);
+            padding: 6px 10px;
+            border-radius: 20px;
+            z-index: 10;
+            color: white;
+            font-size: 12px;
+            pointer-events: auto;
+        }
+        .settings-panel label { white-space: nowrap; }
+        .settings-panel input[type="range"] { width: 80px; cursor: pointer; }
+        .settings-panel span { min-width: 20px; text-align: center; font-weight: bold; }
     </style>
 </head>
 <body>
-<div class="game-wrapper"><canvas id="game"></canvas></div>
-<script>
-    (function() {
-        const canvas = document.getElementById('game');
-        const ctx = canvas.getContext('2d');
-        const W = 390, H = 700;
-        canvas.width = W; canvas.height = H;
+    <div class="menu-bar">
+        <button id="btnDirect" class="active" onclick="switchMode('direct')">Direct Throw</button>
+        <button id="btnPull" onclick="switchMode('pull')">Pull &amp; Throw</button>
+    </div>
 
-        const COLS = 6, ROWS = 8, BLOCK_SIZE = 50, H_GAP = 8, V_GAP = 5;
-        const GRID_LEFT = (W - (COLS * BLOCK_SIZE + (COLS - 1) * H_GAP)) / 2;
-        const GRID_TOP = 28;
-        const colCenterX = [];
-        for (let c = 0; c < COLS; c++) colCenterX.push(GRID_LEFT + BLOCK_SIZE/2 + c * (BLOCK_SIZE + H_GAP));
+    <!-- Direct Throw Mode -->
+    <div class="game-container active" id="containerDirect">
+        <div class="game-wrapper">
+            <canvas id="gameDirect"></canvas>
+        </div>
+    </div>
 
-        const COLORS = ['#FF6B6B','#4ECDC4','#FFE66D','#A78BFA'];
-        const COLOR_LIGHT = ['#FF9E9E','#7EE8E0','#FFF0A0','#C4B5FD'];
-        const COLOR_DARK = ['#CC4444','#2FA89E','#D4B800','#7C5EC7'];
+    <!-- Pull & Throw Mode -->
+    <div class="game-container" id="containerPull">
+        <div class="game-wrapper">
+            <canvas id="gamePull"></canvas>
+            <div class="settings-panel">
+                <label for="descendSlider">Descend every</label>
+                <input type="range" id="descendSlider" min="1" max="5" value="2" step="1">
+                <span id="descendValue">2</span>
+                <label>throws</label>
+            </div>
+        </div>
+    </div>
 
-        let grid = [], score = 0, gamePhase = 'idle';
-        let capybaraX = colCenterX[2], capybaraY = 570;
-        let highlightedCol = -1, isDragging = false, dragOffsetX = 0;
-        let gameOver = false, win = false, nextBlockColor = null;
-
-        let throwCount = 0, rowGenerationCount = 0;
-        let woodenBlockActive = false, woodenBlockRow = -1;
-
-        let animStep = null, animProgress = 0, animDuration = 0, animStartTime = 0;
-        let throwingBlock = null, clearingBlocks = [], particles = [];
-        let capybaraRunAway = false;
-
-        let herdCapybaras = [], winDanceActive = false, winDanceStartTime = 0;
-        let playerDanceDir = 1;
-        const WIN_DANCE_DURATION = 4000;
-
-        function createEmptyGrid() { return Array.from({length: ROWS}, () => Array(COLS).fill(null)); }
-        function getRandomColor() { return Math.floor(Math.random() * 4); }
-
-        function fillInitialGrid(numRows) {
-            grid = createEmptyGrid();
-            for (let r = 0; r < numRows; r++) for (let c = 0; c < COLS; c++) grid[r][c] = getRandomColor();
-            resolveInitialMatches();
-        }
-
-        function resolveInitialMatches() {
-            let matches = findAllMatches(), iter = 0;
-            while (matches.length && iter++ < 100) {
-                for (const {row, col} of matches) {
-                    const neighbors = new Set();
-                    if (row>0 && grid[row-1][col]!==null) neighbors.add(grid[row-1][col]);
-                    if (row<ROWS-1 && grid[row+1][col]!==null) neighbors.add(grid[row+1][col]);
-                    if (col>0 && grid[row][col-1]!==null) neighbors.add(grid[row][col-1]);
-                    if (col<COLS-1 && grid[row][col+1]!==null) neighbors.add(grid[row][col+1]);
-                    let nc; do { nc = getRandomColor(); } while (neighbors.has(nc) && neighbors.size < 4);
-                    grid[row][col] = nc;
-                }
-                matches = findAllMatches();
+    <script>
+        // Menu switch function (global)
+        window.switchMode = function(mode) {
+            const directContainer = document.getElementById('containerDirect');
+            const pullContainer = document.getElementById('containerPull');
+            const btnDirect = document.getElementById('btnDirect');
+            const btnPull = document.getElementById('btnPull');
+            if (mode === 'direct') {
+                directContainer.classList.add('active');
+                pullContainer.classList.remove('active');
+                btnDirect.classList.add('active');
+                btnPull.classList.remove('active');
+            } else {
+                directContainer.classList.remove('active');
+                pullContainer.classList.add('active');
+                btnDirect.classList.remove('active');
+                btnPull.classList.add('active');
             }
-        }
+        };
+    </script>
 
-        function getBlockPixelX(col) { return GRID_LEFT + col * (BLOCK_SIZE + H_GAP); }
-        function getBlockPixelY(row) { return GRID_TOP + row * (BLOCK_SIZE + V_GAP); }
+    <!-- Direct Throw Game Script -->
+    <script>
+        (function() {
+            const canvas = document.getElementById('gameDirect');
+            const ctx = canvas.getContext('2d');
+            const W = 390, H = 700;
+            canvas.width = W; canvas.height = H;
 
-        function getColumnFromX(x) {
-            let best = 0, bestDist = Infinity;
-            for (let c=0;c<COLS;c++) { const d=Math.abs(x-colCenterX[c]); if(d<bestDist){bestDist=d;best=c;} }
-            return best;
-        }
+            const COLS = 6, ROWS = 8, BLOCK_SIZE = 50, H_GAP = 8, V_GAP = 5;
+            const GRID_LEFT = (W - (COLS * BLOCK_SIZE + (COLS - 1) * H_GAP)) / 2;
+            const GRID_TOP = 28;
+            const colCenterX = [];
+            for (let c = 0; c < COLS; c++) colCenterX.push(GRID_LEFT + BLOCK_SIZE/2 + c * (BLOCK_SIZE + H_GAP));
 
-        function getTopEmptyRow(col) {
-            for (let r = 0; r < ROWS; r++) if (grid[r][col] === null) return r;
-            return -1;
-        }
+            const COLORS = ['#FF6B6B','#4ECDC4','#FFE66D','#A78BFA'];
+            const COLOR_LIGHT = ['#FF9E9E','#7EE8E0','#FFF0A0','#C4B5FD'];
+            const COLOR_DARK = ['#CC4444','#2FA89E','#D4B800','#7C5EC7'];
 
-        function isColumnFull(col) { return getTopEmptyRow(col) === -1; }
+            let grid = [], score = 0, gamePhase = 'idle';
+            let capybaraX = colCenterX[2], capybaraY = 570;
+            let highlightedCol = -1, isDragging = false, dragOffsetX = 0;
+            let gameOver = false, win = false, nextBlockColor = null;
 
-        function findAllMatches() {
-            const visited = new Set(), matched = [];
-            for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
-                if (grid[r][c] === null || grid[r][c] === -1) continue;
-                const key = `${r},${c}`; if(visited.has(key)) continue;
-                const color = grid[r][c], group = [], stack = [{row:r, col:c}]; visited.add(key);
-                while (stack.length) {
-                    const {row, col} = stack.pop(); group.push({row, col});
-                    for (const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
-                        const nr=row+dr, nc=col+dc;
-                        if (nr>=0 && nr<ROWS && nc>=0 && nc<COLS && !visited.has(`${nr},${nc}`) && grid[nr][nc]===color) {
-                            visited.add(`${nr},${nc}`); stack.push({row:nr, col:nc});
+            let throwCount = 0, rowGenerationCount = 0;
+            let woodenBlockActive = false, woodenBlockRow = -1;
+
+            let animStep = null, animProgress = 0, animDuration = 0, animStartTime = 0;
+            let throwingBlock = null, clearingBlocks = [], particles = [];
+            let capybaraRunAway = false;
+
+            let herdCapybaras = [], winDanceActive = false, winDanceStartTime = 0;
+            let playerDanceDir = 1;
+            const WIN_DANCE_DURATION = 4000;
+
+            function createEmptyGrid() { return Array.from({length: ROWS}, () => Array(COLS).fill(null)); }
+            function getRandomColor() { return Math.floor(Math.random() * 4); }
+
+            function fillInitialGrid(numRows) {
+                grid = createEmptyGrid();
+                for (let r = 0; r < numRows; r++) for (let c = 0; c < COLS; c++) grid[r][c] = getRandomColor();
+                resolveInitialMatches();
+            }
+
+            function resolveInitialMatches() {
+                let matches = findAllMatches(), iter = 0;
+                while (matches.length && iter++ < 100) {
+                    for (const {row, col} of matches) {
+                        const neighbors = new Set();
+                        if (row>0 && grid[row-1][col]!==null) neighbors.add(grid[row-1][col]);
+                        if (row<ROWS-1 && grid[row+1][col]!==null) neighbors.add(grid[row+1][col]);
+                        if (col>0 && grid[row][col-1]!==null) neighbors.add(grid[row][col-1]);
+                        if (col<COLS-1 && grid[row][col+1]!==null) neighbors.add(grid[row][col+1]);
+                        let nc; do { nc = getRandomColor(); } while (neighbors.has(nc) && neighbors.size < 4);
+                        grid[row][col] = nc;
+                    }
+                    matches = findAllMatches();
+                }
+            }
+
+            function getBlockPixelX(col) { return GRID_LEFT + col * (BLOCK_SIZE + H_GAP); }
+            function getBlockPixelY(row) { return GRID_TOP + row * (BLOCK_SIZE + V_GAP); }
+
+            function getColumnFromX(x) {
+                let best = 0, bestDist = Infinity;
+                for (let c=0;c<COLS;c++) { const d=Math.abs(x-colCenterX[c]); if(d<bestDist){bestDist=d;best=c;} }
+                return best;
+            }
+
+            function getTopEmptyRow(col) {
+                for (let r = 0; r < ROWS; r++) if (grid[r][col] === null) return r;
+                return -1;
+            }
+
+            function isColumnFull(col) { return getTopEmptyRow(col) === -1; }
+
+            function findAllMatches() {
+                const visited = new Set(), matched = [];
+                for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
+                    if (grid[r][c] === null || grid[r][c] === -1) continue;
+                    const key = `${r},${c}`; if(visited.has(key)) continue;
+                    const color = grid[r][c], group = [], stack = [{row:r, col:c}]; visited.add(key);
+                    while (stack.length) {
+                        const {row, col} = stack.pop(); group.push({row, col});
+                        for (const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                            const nr=row+dr, nc=col+dc;
+                            if (nr>=0 && nr<ROWS && nc>=0 && nc<COLS && !visited.has(`${nr},${nc}`) && grid[nr][nc]===color) {
+                                visited.add(`${nr},${nc}`); stack.push({row:nr, col:nc});
+                            }
                         }
                     }
+                    if (group.length >= 4) matched.push(...group);
                 }
-                if (group.length >= 4) matched.push(...group);
+                return matched;
             }
-            return matched;
-        }
 
-        function spawnParticles(row, col, colorIdx) {
-            const cx = getBlockPixelX(col)+BLOCK_SIZE/2, cy = getBlockPixelY(row)+BLOCK_SIZE/2;
-            for (let i=0;i<12;i++) {
-                const a=Math.PI*2*i/12+Math.random()*0.5, s=2+Math.random()*4;
-                particles.push({x:cx,y:cy,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.02+Math.random()*0.04,size:3+Math.random()*4,color:COLORS[colorIdx]});
-            }
-        }
-
-        function spawnWoodenParticles() {
-            for (let c=0;c<COLS;c++) {
-                const cx = getBlockPixelX(c)+BLOCK_SIZE/2, cy = getBlockPixelY(0)+BLOCK_SIZE/2;
-                for (let i=0;i<20;i++) {
-                    const a=Math.random()*Math.PI*2, s=3+Math.random()*6;
-                    particles.push({x:cx,y:cy,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.015+Math.random()*0.03,size:4+Math.random()*6,color:'#8B5A2B'});
+            function spawnParticles(row, col, colorIdx) {
+                const cx = getBlockPixelX(col)+BLOCK_SIZE/2, cy = getBlockPixelY(row)+BLOCK_SIZE/2;
+                for (let i=0;i<12;i++) {
+                    const a=Math.PI*2*i/12+Math.random()*0.5, s=2+Math.random()*4;
+                    particles.push({x:cx,y:cy,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.02+Math.random()*0.04,size:3+Math.random()*4,color:COLORS[colorIdx]});
                 }
             }
-        }
 
-        function updateParticles() {
-            for (let i=particles.length-1;i>=0;i--) {
-                const p = particles[i]; p.x+=p.vx; p.y+=p.vy; p.life-=p.decay; p.vy+=0.05;
-                if (p.life<=0) particles.splice(i,1);
-            }
-        }
-
-        function drawParticles(ctx) {
-            for (const p of particles) {
-                ctx.save(); ctx.globalAlpha=p.life; ctx.fillStyle=p.color;
-                ctx.fillRect(p.x-p.size/2,p.y-p.size/2,p.size,p.size); ctx.restore();
-            }
-        }
-
-        function drawCapybara(ctx, x, y, scale=1, rot=0) {
-            ctx.save(); ctx.translate(x,y); ctx.scale(scale,scale); ctx.rotate(rot);
-            ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(0,28,34,10,0,0,Math.PI*2); ctx.fill();
-            const bg=ctx.createLinearGradient(0,-25,0,20); bg.addColorStop(0,'#C4956A'); bg.addColorStop(0.5,'#B07848'); bg.addColorStop(1,'#8B5E3C');
-            ctx.fillStyle=bg; ctx.beginPath(); ctx.moveTo(-30,5); ctx.bezierCurveTo(-32,-10,-28,-25,-15,-28); ctx.bezierCurveTo(-5,-30,5,-30,15,-28); ctx.bezierCurveTo(28,-25,32,-10,30,5); ctx.bezierCurveTo(32,18,20,25,10,26); ctx.lineTo(-10,26); ctx.bezierCurveTo(-20,25,-32,18,-30,5); ctx.closePath(); ctx.fill();
-            ctx.strokeStyle='#6B3F20'; ctx.lineWidth=2; ctx.stroke();
-            ctx.fillStyle='#D4A87C'; ctx.beginPath(); ctx.ellipse(0,8,18,14,0,0,Math.PI*2); ctx.fill();
-            const hg=ctx.createLinearGradient(0,-30,0,-5); hg.addColorStop(0,'#D4A87C'); hg.addColorStop(1,'#B07848');
-            ctx.fillStyle=hg; ctx.beginPath(); ctx.arc(0,-18,16,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#6B3F20'; ctx.lineWidth=2; ctx.stroke();
-            ctx.fillStyle='#8B5E3C'; ctx.beginPath(); ctx.arc(-11,-30,6,0,Math.PI*2); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.arc(11,-30,6,0,Math.PI*2); ctx.fill(); ctx.stroke();
-            ctx.fillStyle='#D4A87C'; ctx.beginPath(); ctx.arc(-11,-30,3.5,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(11,-30,3.5,0,Math.PI*2); ctx.fill();
-            ctx.fillStyle='#1a1a1a'; ctx.beginPath(); ctx.arc(-6,-20,3.5,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(6,-20,3.5,0,Math.PI*2); ctx.fill();
-            ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(-5,-21,1.3,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(7,-21,1.3,0,Math.PI*2); ctx.fill();
-            ctx.fillStyle='#A0724A'; ctx.beginPath(); ctx.ellipse(0,-12,8,6,0,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#6B3F20'; ctx.lineWidth=1.5; ctx.stroke();
-            ctx.fillStyle='#3a2010'; ctx.beginPath(); ctx.ellipse(0,-14,3,2.5,0,0,Math.PI*2); ctx.fill();
-            ctx.strokeStyle='#5a3020'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(-3,-10); ctx.quadraticCurveTo(0,-8,3,-10); ctx.stroke();
-            ctx.fillStyle='#A0724A'; ctx.beginPath(); ctx.roundRect(-20,20,12,8,4); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.roundRect(8,20,12,8,4); ctx.fill(); ctx.stroke();
-            ctx.strokeStyle='#6B3F20'; ctx.lineWidth=0.8; ctx.beginPath(); ctx.moveTo(-16,24); ctx.lineTo(-16,28); ctx.moveTo(-12,24); ctx.lineTo(-12,28); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(12,24); ctx.lineTo(12,28); ctx.moveTo(16,24); ctx.lineTo(16,28); ctx.stroke();
-            ctx.restore();
-        }
-
-        function drawHeldBlock(ctx, x, y, idx) {
-            const s=24, h=s/2; ctx.save(); ctx.translate(x,y);
-            ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.roundRect(-h+1,-h+2,s,s,6); ctx.fill();
-            const g=ctx.createLinearGradient(-h,-h,-h,h); g.addColorStop(0,COLOR_LIGHT[idx]); g.addColorStop(0.4,COLORS[idx]); g.addColorStop(1,COLOR_DARK[idx]);
-            ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(-h,-h,s,s,6); ctx.fill();
-            ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(-h+0.5,-h+0.5,s-1,s-1,6); ctx.stroke();
-            ctx.restore();
-        }
-
-        function drawBlock(ctx, row, col, idx, alpha=1, offY=0, scale=1) {
-            const x=getBlockPixelX(col), y=getBlockPixelY(row)+offY, s=BLOCK_SIZE*scale;
-            ctx.save(); ctx.globalAlpha=alpha; ctx.translate(x+BLOCK_SIZE/2, y+BLOCK_SIZE/2); ctx.scale(scale,scale); ctx.translate(-BLOCK_SIZE/2,-BLOCK_SIZE/2);
-            ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.roundRect(2,3,BLOCK_SIZE,BLOCK_SIZE,10); ctx.fill();
-            const g=ctx.createLinearGradient(0,0,0,BLOCK_SIZE); g.addColorStop(0,COLOR_LIGHT[idx]); g.addColorStop(0.4,COLORS[idx]); g.addColorStop(1,COLOR_DARK[idx]);
-            ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(0,0,BLOCK_SIZE,BLOCK_SIZE,10); ctx.fill();
-            ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(0.5,0.5,BLOCK_SIZE-1,BLOCK_SIZE-1,10); ctx.stroke();
-            ctx.restore();
-        }
-
-        function drawWoodenBlock(ctx, row) {
-            const x=GRID_LEFT, y=getBlockPixelY(row), w=COLS*BLOCK_SIZE+(COLS-1)*H_GAP, h=BLOCK_SIZE;
-            ctx.save(); ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.roundRect(x+2,y+3,w,h,12); ctx.fill();
-            const g=ctx.createLinearGradient(0,y,0,y+h); g.addColorStop(0,'#D4A373'); g.addColorStop(0.5,'#B87B41'); g.addColorStop(1,'#8B5A2B');
-            ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(x,y,w,h,12); ctx.fill();
-            ctx.strokeStyle='#5C3A1E'; ctx.lineWidth=2; ctx.beginPath(); ctx.roundRect(x,y,w,h,12); ctx.stroke();
-            ctx.restore();
-        }
-
-        function drawColumnHighlight(ctx, col) {
-            if (col<0) return;
-            const x=getBlockPixelX(col)-2, y=GRID_TOP-2, w=BLOCK_SIZE+4, h=ROWS*(BLOCK_SIZE+V_GAP)-V_GAP+4;
-            ctx.save(); ctx.fillStyle='rgba(255,255,255,0.18)'; ctx.strokeStyle='rgba(255,255,255,0.55)'; ctx.lineWidth=2; ctx.setLineDash([6,3]);
-            ctx.beginPath(); ctx.roundRect(x,y,w,h,10); ctx.fill(); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
-        }
-
-        function render(ts) {
-            ctx.clearRect(0,0,W,H);
-            const bg=ctx.createLinearGradient(0,0,0,H); bg.addColorStop(0,'#1a1a35'); bg.addColorStop(0.5,'#1e1e3a'); bg.addColorStop(1,'#252540');
-            ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
-
-            for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
-                if (grid[r][c]===null || grid[r][c]===-1) continue;
-                const isClear = clearingBlocks.some(b=>b.row===r&&b.col===c);
-                let a=1, s=1, o=0;
-                if (isClear && animStep?.type==='clear') {
-                    const p=animProgress;
-                    if (p<0.5) a = Math.floor(p*10)%2===0?0.4:1;
-                    else { const sp=(p-0.5)/0.5; s=1-sp*0.8; a=1-sp; o=sp*15; }
+            function spawnWoodenParticles() {
+                for (let c=0;c<COLS;c++) {
+                    const cx = getBlockPixelX(c)+BLOCK_SIZE/2, cy = getBlockPixelY(0)+BLOCK_SIZE/2;
+                    for (let i=0;i<20;i++) {
+                        const a=Math.random()*Math.PI*2, s=3+Math.random()*6;
+                        particles.push({x:cx,y:cy,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.015+Math.random()*0.03,size:4+Math.random()*6,color:'#8B5A2B'});
+                    }
                 }
-                if (a>0.01 && s>0.01) drawBlock(ctx, r, c, grid[r][c], a, o, s);
             }
 
-            if (woodenBlockActive && woodenBlockRow>=0) drawWoodenBlock(ctx, woodenBlockRow);
+            function updateParticles() {
+                for (let i=particles.length-1;i>=0;i--) {
+                    const p = particles[i]; p.x+=p.vx; p.y+=p.vy; p.life-=p.decay; p.vy+=0.05;
+                    if (p.life<=0) particles.splice(i,1);
+                }
+            }
 
-            if (throwingBlock && animStep?.type==='throw') {
-                const p=animProgress, e=1-Math.pow(1-p,3);
-                const cy = throwingBlock.fromY + (throwingBlock.toY - throwingBlock.fromY)*e;
-                ctx.save(); const g=ctx.createLinearGradient(0,cy,0,cy+BLOCK_SIZE);
-                g.addColorStop(0,COLOR_LIGHT[throwingBlock.color]); g.addColorStop(0.4,COLORS[throwingBlock.color]); g.addColorStop(1,COLOR_DARK[throwingBlock.color]);
-                ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(getBlockPixelX(throwingBlock.col), cy, BLOCK_SIZE, BLOCK_SIZE, 10); ctx.fill();
+            function drawParticles(ctx) {
+                for (const p of particles) {
+                    ctx.save(); ctx.globalAlpha=p.life; ctx.fillStyle=p.color;
+                    ctx.fillRect(p.x-p.size/2,p.y-p.size/2,p.size,p.size); ctx.restore();
+                }
+            }
+
+            function drawCapybara(ctx, x, y, scale=1, rot=0) {
+                ctx.save(); ctx.translate(x,y); ctx.scale(scale,scale); ctx.rotate(rot);
+                ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(0,28,34,10,0,0,Math.PI*2); ctx.fill();
+                const bg=ctx.createLinearGradient(0,-25,0,20); bg.addColorStop(0,'#C4956A'); bg.addColorStop(0.5,'#B07848'); bg.addColorStop(1,'#8B5E3C');
+                ctx.fillStyle=bg; ctx.beginPath(); ctx.moveTo(-30,5); ctx.bezierCurveTo(-32,-10,-28,-25,-15,-28); ctx.bezierCurveTo(-5,-30,5,-30,15,-28); ctx.bezierCurveTo(28,-25,32,-10,30,5); ctx.bezierCurveTo(32,18,20,25,10,26); ctx.lineTo(-10,26); ctx.bezierCurveTo(-20,25,-32,18,-30,5); ctx.closePath(); ctx.fill();
+                ctx.strokeStyle='#6B3F20'; ctx.lineWidth=2; ctx.stroke();
+                ctx.fillStyle='#D4A87C'; ctx.beginPath(); ctx.ellipse(0,8,18,14,0,0,Math.PI*2); ctx.fill();
+                const hg=ctx.createLinearGradient(0,-30,0,-5); hg.addColorStop(0,'#D4A87C'); hg.addColorStop(1,'#B07848');
+                ctx.fillStyle=hg; ctx.beginPath(); ctx.arc(0,-18,16,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#6B3F20'; ctx.lineWidth=2; ctx.stroke();
+                ctx.fillStyle='#8B5E3C'; ctx.beginPath(); ctx.arc(-11,-30,6,0,Math.PI*2); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.arc(11,-30,6,0,Math.PI*2); ctx.fill(); ctx.stroke();
+                ctx.fillStyle='#D4A87C'; ctx.beginPath(); ctx.arc(-11,-30,3.5,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(11,-30,3.5,0,Math.PI*2); ctx.fill();
+                ctx.fillStyle='#1a1a1a'; ctx.beginPath(); ctx.arc(-6,-20,3.5,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(6,-20,3.5,0,Math.PI*2); ctx.fill();
+                ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(-5,-21,1.3,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(7,-21,1.3,0,Math.PI*2); ctx.fill();
+                ctx.fillStyle='#A0724A'; ctx.beginPath(); ctx.ellipse(0,-12,8,6,0,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#6B3F20'; ctx.lineWidth=1.5; ctx.stroke();
+                ctx.fillStyle='#3a2010'; ctx.beginPath(); ctx.ellipse(0,-14,3,2.5,0,0,Math.PI*2); ctx.fill();
+                ctx.strokeStyle='#5a3020'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(-3,-10); ctx.quadraticCurveTo(0,-8,3,-10); ctx.stroke();
+                ctx.fillStyle='#A0724A'; ctx.beginPath(); ctx.roundRect(-20,20,12,8,4); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.roundRect(8,20,12,8,4); ctx.fill(); ctx.stroke();
+                ctx.strokeStyle='#6B3F20'; ctx.lineWidth=0.8; ctx.beginPath(); ctx.moveTo(-16,24); ctx.lineTo(-16,28); ctx.moveTo(-12,24); ctx.lineTo(-12,28); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(12,24); ctx.lineTo(12,28); ctx.moveTo(16,24); ctx.lineTo(16,28); ctx.stroke();
                 ctx.restore();
             }
 
-            if (gamePhase==='dragging' && highlightedCol>=0) drawColumnHighlight(ctx, highlightedCol);
-            drawParticles(ctx);
+            function drawHeldBlock(ctx, x, y, idx) {
+                const s=24, h=s/2; ctx.save(); ctx.translate(x,y);
+                ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.roundRect(-h+1,-h+2,s,s,6); ctx.fill();
+                const g=ctx.createLinearGradient(-h,-h,-h,h); g.addColorStop(0,COLOR_LIGHT[idx]); g.addColorStop(0.4,COLORS[idx]); g.addColorStop(1,COLOR_DARK[idx]);
+                ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(-h,-h,s,s,6); ctx.fill();
+                ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(-h+0.5,-h+0.5,s-1,s-1,6); ctx.stroke();
+                ctx.restore();
+            }
 
-            if (!capybaraRunAway) {
-                const playerScale = gamePhase === 'win_dance' ? 1.1 : 1;
-                drawCapybara(ctx, capybaraX, capybaraY, playerScale, 0);
-                if (nextBlockColor !== null && !gameOver && !win && gamePhase !== 'win_dance') {
-                    drawHeldBlock(ctx, capybaraX, capybaraY+8, nextBlockColor);
+            function drawBlock(ctx, row, col, idx, alpha=1, offY=0, scale=1) {
+                const x=getBlockPixelX(col), y=getBlockPixelY(row)+offY, s=BLOCK_SIZE*scale;
+                ctx.save(); ctx.globalAlpha=alpha; ctx.translate(x+BLOCK_SIZE/2, y+BLOCK_SIZE/2); ctx.scale(scale,scale); ctx.translate(-BLOCK_SIZE/2,-BLOCK_SIZE/2);
+                ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.roundRect(2,3,BLOCK_SIZE,BLOCK_SIZE,10); ctx.fill();
+                const g=ctx.createLinearGradient(0,0,0,BLOCK_SIZE); g.addColorStop(0,COLOR_LIGHT[idx]); g.addColorStop(0.4,COLORS[idx]); g.addColorStop(1,COLOR_DARK[idx]);
+                ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(0,0,BLOCK_SIZE,BLOCK_SIZE,10); ctx.fill();
+                ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(0.5,0.5,BLOCK_SIZE-1,BLOCK_SIZE-1,10); ctx.stroke();
+                ctx.restore();
+            }
+
+            function drawWoodenBlock(ctx, row) {
+                const x=GRID_LEFT, y=getBlockPixelY(row), w=COLS*BLOCK_SIZE+(COLS-1)*H_GAP, h=BLOCK_SIZE;
+                ctx.save(); ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.roundRect(x+2,y+3,w,h,12); ctx.fill();
+                const g=ctx.createLinearGradient(0,y,0,y+h); g.addColorStop(0,'#D4A373'); g.addColorStop(0.5,'#B87B41'); g.addColorStop(1,'#8B5A2B');
+                ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(x,y,w,h,12); ctx.fill();
+                ctx.strokeStyle='#5C3A1E'; ctx.lineWidth=2; ctx.beginPath(); ctx.roundRect(x,y,w,h,12); ctx.stroke();
+                ctx.restore();
+            }
+
+            function drawColumnHighlight(ctx, col) {
+                if (col<0) return;
+                const x=getBlockPixelX(col)-2, y=GRID_TOP-2, w=BLOCK_SIZE+4, h=ROWS*(BLOCK_SIZE+V_GAP)-V_GAP+4;
+                ctx.save(); ctx.fillStyle='rgba(255,255,255,0.18)'; ctx.strokeStyle='rgba(255,255,255,0.55)'; ctx.lineWidth=2; ctx.setLineDash([6,3]);
+                ctx.beginPath(); ctx.roundRect(x,y,w,h,10); ctx.fill(); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+            }
+
+            function render(ts) {
+                ctx.clearRect(0,0,W,H);
+                const bg=ctx.createLinearGradient(0,0,0,H); bg.addColorStop(0,'#1a1a35'); bg.addColorStop(0.5,'#1e1e3a'); bg.addColorStop(1,'#252540');
+                ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+                for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
+                    if (grid[r][c]===null || grid[r][c]===-1) continue;
+                    const isClear = clearingBlocks.some(b=>b.row===r&&b.col===c);
+                    let a=1, s=1, o=0;
+                    if (isClear && animStep?.type==='clear') {
+                        const p=animProgress;
+                        if (p<0.5) a = Math.floor(p*10)%2===0?0.4:1;
+                        else { const sp=(p-0.5)/0.5; s=1-sp*0.8; a=1-sp; o=sp*15; }
+                    }
+                    if (a>0.01 && s>0.01) drawBlock(ctx, r, c, grid[r][c], a, o, s);
                 }
-            }
 
-            if (gamePhase === 'win_dance') {
-                for (const c of herdCapybaras) drawCapybara(ctx, c.x, c.y, c.scale, c.rotation);
-                ctx.fillStyle = 'rgba(255,255,255,0.9)';
-                ctx.font = 'bold 28px "Segoe UI"';
-                ctx.textAlign = 'center';
-                ctx.fillText('Capybaras are Free!', W/2, H/2-50);
-            }
+                if (woodenBlockActive && woodenBlockRow>=0) drawWoodenBlock(ctx, woodenBlockRow);
 
-            if (win) {
-                ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,W,H);
-                ctx.fillStyle='#FFE66D'; ctx.font='bold 38px "Segoe UI"'; ctx.textAlign='center'; ctx.fillText('LEVEL CLEAR!', W/2, H/2-20);
-                ctx.font='20px "Segoe UI"'; ctx.fillText(`Score: ${score}`, W/2, H/2+30);
-            } else if (gameOver) {
-                ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
-                ctx.fillStyle='#fff'; ctx.font='bold 36px "Segoe UI"'; ctx.textAlign='center'; ctx.fillText('Game Over', W/2, H/2-10);
-                ctx.fillText(`Score: ${score}`, W/2, H/2+35);
-                ctx.fillStyle='#FFE66D'; ctx.font='bold 16px'; ctx.fillText('Tap to Restart', W/2, H/2+70);
-            }
+                if (throwingBlock && animStep?.type==='throw') {
+                    const p=animProgress, e=1-Math.pow(1-p,3);
+                    const cy = throwingBlock.fromY + (throwingBlock.toY - throwingBlock.fromY)*e;
+                    ctx.save(); const g=ctx.createLinearGradient(0,cy,0,cy+BLOCK_SIZE);
+                    g.addColorStop(0,COLOR_LIGHT[throwingBlock.color]); g.addColorStop(0.4,COLORS[throwingBlock.color]); g.addColorStop(1,COLOR_DARK[throwingBlock.color]);
+                    ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(getBlockPixelX(throwingBlock.col), cy, BLOCK_SIZE, BLOCK_SIZE, 10); ctx.fill();
+                    ctx.restore();
+                }
 
-            ctx.fillStyle='#fff'; ctx.font='bold 15px "Segoe UI"'; ctx.textAlign='right'; ctx.fillText(`Score: ${score}`, W-20, GRID_TOP-8);
-        }
+                if (gamePhase==='dragging' && highlightedCol>=0) drawColumnHighlight(ctx, highlightedCol);
+                drawParticles(ctx);
 
-        function applyUpwardGravity() {
-            const moves = [];
-            for (let c=0; c<COLS; c++) {
-                const blocks = [];
-                for (let r=0; r<ROWS; r++) if (grid[r][c]!==null && grid[r][c]!==-1) blocks.push({row:r, color:grid[r][c]});
-                for (let i=0; i<blocks.length; i++) {
-                    const tr = i;
-                    if (blocks[i].row !== tr) {
-                        moves.push({col:c, fromRow:blocks[i].row, toRow:tr});
-                        grid[tr][c] = blocks[i].color;
-                        grid[blocks[i].row][c] = null;
+                if (!capybaraRunAway) {
+                    const playerScale = gamePhase === 'win_dance' ? 1.1 : 1;
+                    drawCapybara(ctx, capybaraX, capybaraY, playerScale, 0);
+                    if (nextBlockColor !== null && !gameOver && !win && gamePhase !== 'win_dance') {
+                        drawHeldBlock(ctx, capybaraX, capybaraY+8, nextBlockColor);
                     }
                 }
-                for (let r=blocks.length; r<ROWS; r++) grid[r][c] = null;
-            }
-            return moves;
-        }
 
-        function shiftDownAndAddRow() {
-            if (woodenBlockActive) return;
-            for (let r=ROWS-1; r>0; r--) for (let c=0; c<COLS; c++) grid[r][c] = grid[r-1][c];
-            rowGenerationCount++;
-            if (rowGenerationCount === 4) {
-                for (let c=0; c<COLS; c++) grid[0][c] = -1;
-                woodenBlockActive = true; woodenBlockRow = 0;
-            } else {
-                for (let c=0; c<COLS; c++) grid[0][c] = getRandomColor();
-            }
-            checkLoseCondition();
-        }
+                if (gamePhase === 'win_dance') {
+                    for (const c of herdCapybaras) drawCapybara(ctx, c.x, c.y, c.scale, c.rotation);
+                    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+                    ctx.font = 'bold 28px "Segoe UI"';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Wooden Block Destroyed!', W/2, H/2-50);
+                }
 
-        function checkLoseCondition() {
-            if (gameOver || win || woodenBlockActive) return;
-            if (grid[ROWS-1].some(cell => cell !== null && cell !== -1)) triggerLose();
-        }
+                if (win) {
+                    ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#FFE66D'; ctx.font='bold 38px "Segoe UI"'; ctx.textAlign='center'; ctx.fillText('LEVEL CLEAR!', W/2, H/2-20);
+                    ctx.font='20px "Segoe UI"'; ctx.fillText(`Score: ${score}`, W/2, H/2+30);
+                } else if (gameOver) {
+                    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#fff'; ctx.font='bold 36px "Segoe UI"'; ctx.textAlign='center'; ctx.fillText('Game Over', W/2, H/2-10);
+                    ctx.fillText(`Score: ${score}`, W/2, H/2+35);
+                    ctx.fillStyle='#FFE66D'; ctx.font='bold 16px'; ctx.fillText('Tap to Restart', W/2, H/2+70);
+                }
 
-        function triggerLose() { gameOver = true; gamePhase = 'lose'; capybaraRunAway = true; }
-
-        function startWinDance() {
-            woodenBlockActive = false;
-            for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) grid[r][c] = null;
-            spawnWoodenParticles();
-            herdCapybaras = [];
-            for (let i = 0; i < 12; i++) {
-                herdCapybaras.push({
-                    x: 40 + Math.random() * (W - 80),
-                    y: -60 - Math.random() * 120,
-                    vx: (Math.random() - 0.5) * 5,
-                    vy: Math.random() * 3 + 2,
-                    scale: 0.5 + Math.random() * 0.7,
-                    rotation: 0,
-                    rotationSpeed: (Math.random() - 0.5) * 0.15
-                });
-            }
-            playerDanceDir = 1;
-            winDanceActive = true;
-            winDanceStartTime = performance.now();
-            gamePhase = 'win_dance';
-        }
-
-        function updateHerdAndPlayer(ts) {
-            if (!winDanceActive) return;
-
-            const playerSpeed = 4;
-            capybaraX += playerDanceDir * playerSpeed;
-            if (capybaraX >= W - 60) {
-                capybaraX = W - 60;
-                playerDanceDir = -1;
-            } else if (capybaraX <= 60) {
-                capybaraX = 60;
-                playerDanceDir = 1;
+                ctx.fillStyle='#fff'; ctx.font='bold 15px "Segoe UI"'; ctx.textAlign='right'; ctx.fillText(`Score: ${score}`, W-20, GRID_TOP-8);
             }
 
-            for (const c of herdCapybaras) {
-                c.x += c.vx;
-                c.y += c.vy;
-                c.vy += 0.2;
-                if (c.x < 30) { c.x = 30; c.vx *= -0.8; }
-                if (c.x > W - 30) { c.x = W - 30; c.vx *= -0.8; }
-                if (c.y > capybaraY - 30) { c.y = capybaraY - 30; c.vy *= -0.6; }
-                c.rotation += c.rotationSpeed;
-                c.scale = 0.6 + Math.sin(ts / 300 + c.x) * 0.1;
-            }
-        }
-
-        function finalizeWin() {
-            winDanceActive = false;
-            herdCapybaras = [];
-            win = true;
-            gamePhase = 'win';
-        }
-
-        function handleThrowComplete(step) {
-            const {col, targetRow, color} = step;
-            grid[targetRow][col] = color;
-            throwingBlock = null;
-
-            // Wooden block destruction: only if thrown block lands directly below it (row 1)
-            if (woodenBlockActive && woodenBlockRow === 0 && targetRow === 1) {
-                startWinDance();
-                return;
-            }
-
-            const matches = findAllMatches();
-            if (matches.length > 0) {
-                clearingBlocks = matches;
-                startAnimationStep({type:'clear', duration:350});
-            } else {
-                finalizeThrow();
-            }
-        }
-
-        function finalizeThrow() {
-            throwCount++;
-            if (throwCount % 5 === 0 && !woodenBlockActive) shiftDownAndAddRow();
-            checkLoseCondition();
-            if (!gameOver && !win && gamePhase !== 'win_dance') {
-                gamePhase = 'idle';
-                if (nextBlockColor === null) pickNextBlockColor();
-            }
-        }
-
-        function pickNextBlockColor() {
-            const present = new Set();
-            for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) if (grid[r][c]!==null && grid[r][c]!==-1) present.add(grid[r][c]);
-            nextBlockColor = present.size ? [...present][Math.floor(Math.random()*present.size)] : getRandomColor();
-        }
-
-        function startAnimationStep(step) {
-            animStep = step; animProgress = 0; animDuration = step.duration||300; animStartTime = performance.now();
-            gamePhase = 'animating';
-        }
-
-        function updateAnimation(ts) {
-            if (!animStep) return;
-            const elapsed = ts - animStartTime; animProgress = Math.min(elapsed / animDuration, 1);
-            if (animProgress >= 1) {
-                const done = animStep; animStep = null; animProgress = 0;
-                if (done.type === 'throw') handleThrowComplete(done);
-                else if (done.type === 'clear') {
-                    for (const b of clearingBlocks) {
-                        if (grid[b.row][b.col]!==null && grid[b.row][b.col]!==-1) {
-                            spawnParticles(b.row, b.col, grid[b.row][b.col]);
-                            score += 10;
+            function applyUpwardGravity() {
+                const moves = [];
+                for (let c=0; c<COLS; c++) {
+                    const blocks = [];
+                    for (let r=0; r<ROWS; r++) if (grid[r][c]!==null && grid[r][c]!==-1) blocks.push({row:r, color:grid[r][c]});
+                    for (let i=0; i<blocks.length; i++) {
+                        const tr = i;
+                        if (blocks[i].row !== tr) {
+                            moves.push({col:c, fromRow:blocks[i].row, toRow:tr});
+                            grid[tr][c] = blocks[i].color;
+                            grid[blocks[i].row][c] = null;
                         }
-                        grid[b.row][b.col] = null;
                     }
-                    clearingBlocks = [];
-                    const moves = applyUpwardGravity();
-                    if (moves.length) startAnimationStep({type:'gravity', duration:250});
-                    else finalizeThrow();
-                } else if (done.type === 'gravity') finalizeThrow();
+                    for (let r=blocks.length; r<ROWS; r++) grid[r][c] = null;
+                }
+                return moves;
             }
-        }
 
-        function initiateThrow(col) {
-            if (isColumnFull(col)) { gameOver = true; gamePhase = 'idle'; return; }
-            const targetRow = getTopEmptyRow(col);
-            const color = nextBlockColor;
-            if (color === null) { pickNextBlockColor(); initiateThrow(col); return; }
-            nextBlockColor = null;
-            const fromY = capybaraY - 30, toY = getBlockPixelY(targetRow);
-            throwingBlock = {col, color, fromY, toY, targetRow};
-            startAnimationStep({type:'throw', duration:280, col, color, targetRow});
-        }
+            function shiftDownAndAddRow() {
+                if (woodenBlockActive) return;
+                for (let r=ROWS-1; r>0; r--) for (let c=0; c<COLS; c++) grid[r][c] = grid[r-1][c];
+                rowGenerationCount++;
+                if (rowGenerationCount === 4) {
+                    for (let c=0; c<COLS; c++) grid[0][c] = -1;
+                    woodenBlockActive = true; woodenBlockRow = 0;
+                } else {
+                    for (let c=0; c<COLS; c++) grid[0][c] = getRandomColor();
+                }
+                checkLoseCondition();
+            }
 
-        function handlePointerDown(e) {
-            if (gameOver || win || gamePhase==='win_dance') { if (gameOver||win) restartGame(); return; }
-            if (gamePhase !== 'idle') return;
-            const x = getEventX(e), y = getEventY(e);
-            if (Math.hypot(x-capybaraX, y-capybaraY) < 55 || y > capybaraY-30) {
-                isDragging = true; gamePhase = 'dragging'; dragOffsetX = capybaraX - x;
+            function checkLoseCondition() {
+                if (gameOver || win || woodenBlockActive) return;
+                if (grid[ROWS-1].some(cell => cell !== null && cell !== -1)) triggerLose();
+            }
+
+            function triggerLose() { gameOver = true; gamePhase = 'lose'; capybaraRunAway = true; }
+
+            function startWinDance() {
+                woodenBlockActive = false;
+                for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) grid[r][c] = null;
+                spawnWoodenParticles();
+                herdCapybaras = [];
+                for (let i = 0; i < 12; i++) {
+                    herdCapybaras.push({
+                        x: 40 + Math.random() * (W - 80),
+                        y: -60 - Math.random() * 120,
+                        vx: (Math.random() - 0.5) * 5,
+                        vy: Math.random() * 3 + 2,
+                        scale: 0.5 + Math.random() * 0.7,
+                        rotation: 0,
+                        rotationSpeed: (Math.random() - 0.5) * 0.15
+                    });
+                }
+                playerDanceDir = 1;
+                winDanceActive = true;
+                winDanceStartTime = performance.now();
+                gamePhase = 'win_dance';
+            }
+
+            function updateHerdAndPlayer(ts) {
+                if (!winDanceActive) return;
+                const playerSpeed = 4;
+                capybaraX += playerDanceDir * playerSpeed;
+                if (capybaraX >= W - 60) { capybaraX = W - 60; playerDanceDir = -1; }
+                else if (capybaraX <= 60) { capybaraX = 60; playerDanceDir = 1; }
+                for (const c of herdCapybaras) {
+                    c.x += c.vx; c.y += c.vy; c.vy += 0.2;
+                    if (c.x < 30) { c.x = 30; c.vx *= -0.8; }
+                    if (c.x > W - 30) { c.x = W - 30; c.vx *= -0.8; }
+                    if (c.y > capybaraY - 30) { c.y = capybaraY - 30; c.vy *= -0.6; }
+                    c.rotation += c.rotationSpeed;
+                    c.scale = 0.6 + Math.sin(ts / 300 + c.x) * 0.1;
+                }
+            }
+
+            function finalizeWin() { winDanceActive = false; herdCapybaras = []; win = true; gamePhase = 'win'; }
+
+            function handleThrowComplete(step) {
+                const {col, targetRow, color} = step;
+                grid[targetRow][col] = color;
+                throwingBlock = null;
+
+                if (woodenBlockActive && woodenBlockRow === 0 && targetRow === 1) {
+                    startWinDance();
+                    return;
+                }
+
+                const matches = findAllMatches();
+                if (matches.length > 0) {
+                    clearingBlocks = matches;
+                    startAnimationStep({type:'clear', duration:350});
+                } else {
+                    finalizeThrow();
+                }
+            }
+
+            function finalizeThrow() {
+                throwCount++;
+                if (throwCount % 5 === 0 && !woodenBlockActive) shiftDownAndAddRow();
+                checkLoseCondition();
+                if (!gameOver && !win && gamePhase !== 'win_dance') {
+                    gamePhase = 'idle';
+                    if (nextBlockColor === null) pickNextBlockColor();
+                }
+            }
+
+            function pickNextBlockColor() {
+                const present = new Set();
+                for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) if (grid[r][c]!==null && grid[r][c]!==-1) present.add(grid[r][c]);
+                nextBlockColor = present.size ? [...present][Math.floor(Math.random()*present.size)] : getRandomColor();
+            }
+
+            function startAnimationStep(step) {
+                animStep = step; animProgress = 0; animDuration = step.duration||300; animStartTime = performance.now();
+                gamePhase = 'animating';
+            }
+
+            function updateAnimation(ts) {
+                if (!animStep) return;
+                const elapsed = ts - animStartTime; animProgress = Math.min(elapsed / animDuration, 1);
+                if (animProgress >= 1) {
+                    const done = animStep; animStep = null; animProgress = 0;
+                    if (done.type === 'throw') handleThrowComplete(done);
+                    else if (done.type === 'clear') {
+                        for (const b of clearingBlocks) {
+                            if (grid[b.row][b.col]!==null && grid[b.row][b.col]!==-1) {
+                                spawnParticles(b.row, b.col, grid[b.row][b.col]);
+                                score += 10;
+                            }
+                            grid[b.row][b.col] = null;
+                        }
+                        clearingBlocks = [];
+                        const moves = applyUpwardGravity();
+                        if (moves.length) startAnimationStep({type:'gravity', duration:250});
+                        else finalizeThrow();
+                    } else if (done.type === 'gravity') finalizeThrow();
+                }
+            }
+
+            function initiateThrow(col) {
+                if (isColumnFull(col)) { gameOver = true; gamePhase = 'idle'; return; }
+                const targetRow = getTopEmptyRow(col);
+                const color = nextBlockColor;
+                if (color === null) { pickNextBlockColor(); initiateThrow(col); return; }
+                nextBlockColor = null;
+                const fromY = capybaraY - 30, toY = getBlockPixelY(targetRow);
+                throwingBlock = {col, color, fromY, toY, targetRow};
+                startAnimationStep({type:'throw', duration:280, col, color, targetRow});
+            }
+
+            function handlePointerDown(e) {
+                if (gameOver || win || gamePhase==='win_dance') { if (gameOver||win) restartGame(); return; }
+                if (gamePhase !== 'idle') return;
+                const x = getEventX(e), y = getEventY(e);
+                if (Math.hypot(x-capybaraX, y-capybaraY) < 55 || y > capybaraY-30) {
+                    isDragging = true; gamePhase = 'dragging'; dragOffsetX = capybaraX - x;
+                    highlightedCol = getColumnFromX(capybaraX); e.preventDefault();
+                }
+            }
+
+            function handlePointerMove(e) {
+                if (!isDragging || gamePhase!=='dragging') return;
+                const x = getEventX(e);
+                capybaraX = Math.max(colCenterX[0]-15, Math.min(colCenterX[COLS-1]+15, x+dragOffsetX));
                 highlightedCol = getColumnFromX(capybaraX); e.preventDefault();
             }
-        }
 
-        function handlePointerMove(e) {
-            if (!isDragging || gamePhase!=='dragging') return;
-            const x = getEventX(e);
-            capybaraX = Math.max(colCenterX[0]-15, Math.min(colCenterX[COLS-1]+15, x+dragOffsetX));
-            highlightedCol = getColumnFromX(capybaraX); e.preventDefault();
-        }
-
-        function handlePointerUp(e) {
-            if (!isDragging || gamePhase!=='dragging') return;
-            isDragging = false;
-            const col = highlightedCol>=0 ? highlightedCol : getColumnFromX(capybaraX);
-            capybaraX = colCenterX[col]; highlightedCol = -1;
-            initiateThrow(col); e.preventDefault();
-        }
-
-        function getEventX(e) {
-            const r = canvas.getBoundingClientRect(); const sx = W / r.width;
-            return (e.touches?.[0]?.clientX ?? e.changedTouches?.[0]?.clientX ?? e.clientX - r.left) * sx;
-        }
-        function getEventY(e) {
-            const r = canvas.getBoundingClientRect(); const sy = H / r.height;
-            return (e.touches?.[0]?.clientY ?? e.changedTouches?.[0]?.clientY ?? e.clientY - r.top) * sy;
-        }
-
-        function restartGame() {
-            grid = createEmptyGrid(); fillInitialGrid(2); score = 0; gameOver = false; win = false; gamePhase = 'idle';
-            animStep = null; throwingBlock = null; clearingBlocks = []; particles = [];
-            isDragging = false; highlightedCol = -1; capybaraX = colCenterX[2]; capybaraY = 570;
-            throwCount = 0; rowGenerationCount = 0; woodenBlockActive = false; woodenBlockRow = -1;
-            capybaraRunAway = false; herdCapybaras = []; winDanceActive = false;
-            pickNextBlockColor();
-        }
-
-        canvas.addEventListener('mousedown', handlePointerDown);
-        canvas.addEventListener('mousemove', handlePointerMove);
-        canvas.addEventListener('mouseup', handlePointerUp);
-        canvas.addEventListener('mouseleave', e => { if (isDragging) handlePointerUp(e); });
-        canvas.addEventListener('touchstart', handlePointerDown, {passive:false});
-        canvas.addEventListener('touchmove', handlePointerMove, {passive:false});
-        canvas.addEventListener('touchend', handlePointerUp, {passive:false});
-        canvas.addEventListener('touchcancel', e => { if (isDragging) handlePointerUp(e); });
-        canvas.addEventListener('contextmenu', e => e.preventDefault());
-
-        function gameLoop(ts) {
-            if (gamePhase === 'win_dance') {
-                updateHerdAndPlayer(ts);
-                if (ts - winDanceStartTime > WIN_DANCE_DURATION) finalizeWin();
+            function handlePointerUp(e) {
+                if (!isDragging || gamePhase!=='dragging') return;
+                isDragging = false;
+                const col = highlightedCol>=0 ? highlightedCol : getColumnFromX(capybaraX);
+                capybaraX = colCenterX[col]; highlightedCol = -1;
+                initiateThrow(col); e.preventDefault();
             }
-            updateAnimation(ts);
-            updateParticles();
-            render(ts);
-            requestAnimationFrame(gameLoop);
-        }
 
-        function init() {
-            fillInitialGrid(2); capybaraX = colCenterX[2]; capybaraY = 570;
-            throwCount = 0; rowGenerationCount = 0; woodenBlockActive = false;
-            pickNextBlockColor();
-        }
-        init();
-        requestAnimationFrame(gameLoop);
-    })();
-</script>
+            function getEventX(e) {
+                const r = canvas.getBoundingClientRect(); const sx = W / r.width;
+                return (e.touches?.[0]?.clientX ?? e.changedTouches?.[0]?.clientX ?? e.clientX - r.left) * sx;
+            }
+            function getEventY(e) {
+                const r = canvas.getBoundingClientRect(); const sy = H / r.height;
+                return (e.touches?.[0]?.clientY ?? e.changedTouches?.[0]?.clientY ?? e.clientY - r.top) * sy;
+            }
+
+            function restartGame() {
+                grid = createEmptyGrid(); fillInitialGrid(2); score = 0; gameOver = false; win = false; gamePhase = 'idle';
+                animStep = null; throwingBlock = null; clearingBlocks = []; particles = [];
+                isDragging = false; highlightedCol = -1; capybaraX = colCenterX[2]; capybaraY = 570;
+                throwCount = 0; rowGenerationCount = 0; woodenBlockActive = false; woodenBlockRow = -1;
+                capybaraRunAway = false; herdCapybaras = []; winDanceActive = false;
+                pickNextBlockColor();
+            }
+
+            canvas.addEventListener('mousedown', handlePointerDown);
+            canvas.addEventListener('mousemove', handlePointerMove);
+            canvas.addEventListener('mouseup', handlePointerUp);
+            canvas.addEventListener('mouseleave', e => { if (isDragging) handlePointerUp(e); });
+            canvas.addEventListener('touchstart', handlePointerDown, {passive:false});
+            canvas.addEventListener('touchmove', handlePointerMove, {passive:false});
+            canvas.addEventListener('touchend', handlePointerUp, {passive:false});
+            canvas.addEventListener('touchcancel', e => { if (isDragging) handlePointerUp(e); });
+            canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+            function gameLoop(ts) {
+                if (gamePhase === 'win_dance') {
+                    updateHerdAndPlayer(ts);
+                    if (ts - winDanceStartTime > WIN_DANCE_DURATION) finalizeWin();
+                }
+                updateAnimation(ts);
+                updateParticles();
+                render(ts);
+                requestAnimationFrame(gameLoop);
+            }
+
+            function init() {
+                fillInitialGrid(2); capybaraX = colCenterX[2]; capybaraY = 570;
+                throwCount = 0; rowGenerationCount = 0; woodenBlockActive = false;
+                pickNextBlockColor();
+            }
+            init();
+            requestAnimationFrame(gameLoop);
+        })();
+    </script>
+
+    <!-- Pull & Throw Game Script -->
+    <script>
+        (function() {
+            const canvas = document.getElementById('gamePull');
+            const ctx = canvas.getContext('2d');
+            const W = 390, H = 700;
+            canvas.width = W; canvas.height = H;
+
+            const COLS = 6, ROWS = 8, BLOCK_SIZE = 50, H_GAP = 8, V_GAP = 5;
+            const GRID_LEFT = (W - (COLS * BLOCK_SIZE + (COLS - 1) * H_GAP)) / 2;
+            const GRID_TOP = 28;
+            const colCenterX = [];
+            for (let c = 0; c < COLS; c++) colCenterX.push(GRID_LEFT + BLOCK_SIZE/2 + c * (BLOCK_SIZE + H_GAP));
+
+            const COLORS = ['#FF6B6B','#4ECDC4','#FFE66D','#A78BFA'];
+            const COLOR_LIGHT = ['#FF9E9E','#7EE8E0','#FFF0A0','#C4B5FD'];
+            const COLOR_DARK = ['#CC4444','#2FA89E','#D4B800','#7C5EC7'];
+
+            let descendInterval = 2;
+            const descendSlider = document.getElementById('descendSlider');
+            const descendValueDisplay = document.getElementById('descendValue');
+            descendSlider.addEventListener('input', () => {
+                descendInterval = parseInt(descendSlider.value, 10);
+                descendValueDisplay.textContent = descendInterval;
+            });
+
+            let grid = [], score = 0, gamePhase = 'idle';
+            let actionPhase = 'pull';
+            let capybaraX = colCenterX[2], capybaraY = 570;
+            let highlightedCol = -1, isDragging = false, dragOffsetX = 0;
+            let gameOver = false, win = false;
+            let heldBlockColor = null;
+
+            let throwCount = 0, rowGenerationCount = 0;
+            let woodenBlockActive = false, woodenBlockRow = -1;
+
+            let animStep = null, animProgress = 0, animDuration = 0, animStartTime = 0;
+            let throwingBlock = null, pullingBlock = null, clearingBlocks = [], particles = [];
+            let capybaraRunAway = false;
+
+            let herdCapybaras = [], winDanceActive = false, winDanceStartTime = 0;
+            let playerDanceDir = 1;
+            const WIN_DANCE_DURATION = 4000;
+
+            function createEmptyGrid() { return Array.from({length: ROWS}, () => Array(COLS).fill(null)); }
+            function getRandomColor() { return Math.floor(Math.random() * 4); }
+
+            function fillInitialGrid(numRows) {
+                grid = createEmptyGrid();
+                for (let r = 0; r < numRows; r++) for (let c = 0; c < COLS; c++) grid[r][c] = getRandomColor();
+                resolveInitialMatches();
+            }
+
+            function resolveInitialMatches() {
+                let matches = findAllMatches(), iter = 0;
+                while (matches.length && iter++ < 100) {
+                    for (const {row, col} of matches) {
+                        const neighbors = new Set();
+                        if (row>0 && grid[row-1][col]!==null) neighbors.add(grid[row-1][col]);
+                        if (row<ROWS-1 && grid[row+1][col]!==null) neighbors.add(grid[row+1][col]);
+                        if (col>0 && grid[row][col-1]!==null) neighbors.add(grid[row][col-1]);
+                        if (col<COLS-1 && grid[row][col+1]!==null) neighbors.add(grid[row][col+1]);
+                        let nc; do { nc = getRandomColor(); } while (neighbors.has(nc) && neighbors.size < 4);
+                        grid[row][col] = nc;
+                    }
+                    matches = findAllMatches();
+                }
+            }
+
+            function getBlockPixelX(col) { return GRID_LEFT + col * (BLOCK_SIZE + H_GAP); }
+            function getBlockPixelY(row) { return GRID_TOP + row * (BLOCK_SIZE + V_GAP); }
+
+            function getColumnFromX(x) {
+                let best = 0, bestDist = Infinity;
+                for (let c=0;c<COLS;c++) { const d=Math.abs(x-colCenterX[c]); if(d<bestDist){bestDist=d;best=c;} }
+                return best;
+            }
+
+            function getTopEmptyRow(col) {
+                for (let r = 0; r < ROWS; r++) if (grid[r][col] === null) return r;
+                return -1;
+            }
+
+            function isColumnFull(col) { return getTopEmptyRow(col) === -1; }
+
+            function getBottomBlockRow(col) {
+                for (let r = ROWS-1; r >= 0; r--) {
+                    if (grid[r][col] !== null && grid[r][col] !== -1) return r;
+                }
+                return -1;
+            }
+
+            function findAllMatches() {
+                const visited = new Set(), matched = [];
+                for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
+                    if (grid[r][c] === null || grid[r][c] === -1) continue;
+                    const key = `${r},${c}`; if(visited.has(key)) continue;
+                    const color = grid[r][c], group = [], stack = [{row:r, col:c}]; visited.add(key);
+                    while (stack.length) {
+                        const {row, col} = stack.pop(); group.push({row, col});
+                        for (const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                            const nr=row+dr, nc=col+dc;
+                            if (nr>=0 && nr<ROWS && nc>=0 && nc<COLS && !visited.has(`${nr},${nc}`) && grid[nr][nc]===color) {
+                                visited.add(`${nr},${nc}`); stack.push({row:nr, col:nc});
+                            }
+                        }
+                    }
+                    if (group.length >= 4) matched.push(...group);
+                }
+                return matched;
+            }
+
+            function spawnParticles(row, col, colorIdx) {
+                const cx = getBlockPixelX(col)+BLOCK_SIZE/2, cy = getBlockPixelY(row)+BLOCK_SIZE/2;
+                for (let i=0;i<12;i++) {
+                    const a=Math.PI*2*i/12+Math.random()*0.5, s=2+Math.random()*4;
+                    particles.push({x:cx,y:cy,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.02+Math.random()*0.04,size:3+Math.random()*4,color:COLORS[colorIdx]});
+                }
+            }
+
+            function spawnWoodenParticles() {
+                for (let c=0;c<COLS;c++) {
+                    const cx = getBlockPixelX(c)+BLOCK_SIZE/2, cy = getBlockPixelY(0)+BLOCK_SIZE/2;
+                    for (let i=0;i<20;i++) {
+                        const a=Math.random()*Math.PI*2, s=3+Math.random()*6;
+                        particles.push({x:cx,y:cy,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,decay:0.015+Math.random()*0.03,size:4+Math.random()*6,color:'#8B5A2B'});
+                    }
+                }
+            }
+
+            function updateParticles() {
+                for (let i=particles.length-1;i>=0;i--) {
+                    const p = particles[i]; p.x+=p.vx; p.y+=p.vy; p.life-=p.decay; p.vy+=0.05;
+                    if (p.life<=0) particles.splice(i,1);
+                }
+            }
+
+            function drawParticles(ctx) {
+                for (const p of particles) {
+                    ctx.save(); ctx.globalAlpha=p.life; ctx.fillStyle=p.color;
+                    ctx.fillRect(p.x-p.size/2,p.y-p.size/2,p.size,p.size); ctx.restore();
+                }
+            }
+
+            function drawCapybara(ctx, x, y, scale=1, rot=0) {
+                ctx.save(); ctx.translate(x,y); ctx.scale(scale,scale); ctx.rotate(rot);
+                ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(0,28,34,10,0,0,Math.PI*2); ctx.fill();
+                const bg=ctx.createLinearGradient(0,-25,0,20); bg.addColorStop(0,'#C4956A'); bg.addColorStop(0.5,'#B07848'); bg.addColorStop(1,'#8B5E3C');
+                ctx.fillStyle=bg; ctx.beginPath(); ctx.moveTo(-30,5); ctx.bezierCurveTo(-32,-10,-28,-25,-15,-28); ctx.bezierCurveTo(-5,-30,5,-30,15,-28); ctx.bezierCurveTo(28,-25,32,-10,30,5); ctx.bezierCurveTo(32,18,20,25,10,26); ctx.lineTo(-10,26); ctx.bezierCurveTo(-20,25,-32,18,-30,5); ctx.closePath(); ctx.fill();
+                ctx.strokeStyle='#6B3F20'; ctx.lineWidth=2; ctx.stroke();
+                ctx.fillStyle='#D4A87C'; ctx.beginPath(); ctx.ellipse(0,8,18,14,0,0,Math.PI*2); ctx.fill();
+                const hg=ctx.createLinearGradient(0,-30,0,-5); hg.addColorStop(0,'#D4A87C'); hg.addColorStop(1,'#B07848');
+                ctx.fillStyle=hg; ctx.beginPath(); ctx.arc(0,-18,16,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#6B3F20'; ctx.lineWidth=2; ctx.stroke();
+                ctx.fillStyle='#8B5E3C'; ctx.beginPath(); ctx.arc(-11,-30,6,0,Math.PI*2); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.arc(11,-30,6,0,Math.PI*2); ctx.fill(); ctx.stroke();
+                ctx.fillStyle='#D4A87C'; ctx.beginPath(); ctx.arc(-11,-30,3.5,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(11,-30,3.5,0,Math.PI*2); ctx.fill();
+                ctx.fillStyle='#1a1a1a'; ctx.beginPath(); ctx.arc(-6,-20,3.5,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(6,-20,3.5,0,Math.PI*2); ctx.fill();
+                ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(-5,-21,1.3,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(7,-21,1.3,0,Math.PI*2); ctx.fill();
+                ctx.fillStyle='#A0724A'; ctx.beginPath(); ctx.ellipse(0,-12,8,6,0,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#6B3F20'; ctx.lineWidth=1.5; ctx.stroke();
+                ctx.fillStyle='#3a2010'; ctx.beginPath(); ctx.ellipse(0,-14,3,2.5,0,0,Math.PI*2); ctx.fill();
+                ctx.strokeStyle='#5a3020'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(-3,-10); ctx.quadraticCurveTo(0,-8,3,-10); ctx.stroke();
+                ctx.fillStyle='#A0724A'; ctx.beginPath(); ctx.roundRect(-20,20,12,8,4); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.roundRect(8,20,12,8,4); ctx.fill(); ctx.stroke();
+                ctx.strokeStyle='#6B3F20'; ctx.lineWidth=0.8; ctx.beginPath(); ctx.moveTo(-16,24); ctx.lineTo(-16,28); ctx.moveTo(-12,24); ctx.lineTo(-12,28); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(12,24); ctx.lineTo(12,28); ctx.moveTo(16,24); ctx.lineTo(16,28); ctx.stroke();
+                ctx.restore();
+            }
+
+            function drawHeldBlock(ctx, x, y, colorIdx) {
+                if (colorIdx === null) return;
+                const s=24, h=s/2; ctx.save(); ctx.translate(x,y);
+                ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.roundRect(-h+1,-h+2,s,s,6); ctx.fill();
+                const g=ctx.createLinearGradient(-h,-h,-h,h); g.addColorStop(0,COLOR_LIGHT[colorIdx]); g.addColorStop(0.4,COLORS[colorIdx]); g.addColorStop(1,COLOR_DARK[colorIdx]);
+                ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(-h,-h,s,s,6); ctx.fill();
+                ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(-h+0.5,-h+0.5,s-1,s-1,6); ctx.stroke();
+                ctx.restore();
+            }
+
+            function drawBlock(ctx, row, col, idx, alpha=1, offY=0, scale=1) {
+                const x=getBlockPixelX(col), y=getBlockPixelY(row)+offY, s=BLOCK_SIZE*scale;
+                ctx.save(); ctx.globalAlpha=alpha; ctx.translate(x+BLOCK_SIZE/2, y+BLOCK_SIZE/2); ctx.scale(scale,scale); ctx.translate(-BLOCK_SIZE/2,-BLOCK_SIZE/2);
+                ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.roundRect(2,3,BLOCK_SIZE,BLOCK_SIZE,10); ctx.fill();
+                const g=ctx.createLinearGradient(0,0,0,BLOCK_SIZE); g.addColorStop(0,COLOR_LIGHT[idx]); g.addColorStop(0.4,COLORS[idx]); g.addColorStop(1,COLOR_DARK[idx]);
+                ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(0,0,BLOCK_SIZE,BLOCK_SIZE,10); ctx.fill();
+                ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.roundRect(0.5,0.5,BLOCK_SIZE-1,BLOCK_SIZE-1,10); ctx.stroke();
+                ctx.restore();
+            }
+
+            function drawWoodenBlock(ctx, row) {
+                const x=GRID_LEFT, y=getBlockPixelY(row), w=COLS*BLOCK_SIZE+(COLS-1)*H_GAP, h=BLOCK_SIZE;
+                ctx.save(); ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.roundRect(x+2,y+3,w,h,12); ctx.fill();
+                const g=ctx.createLinearGradient(0,y,0,y+h); g.addColorStop(0,'#D4A373'); g.addColorStop(0.5,'#B87B41'); g.addColorStop(1,'#8B5A2B');
+                ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(x,y,w,h,12); ctx.fill();
+                ctx.strokeStyle='#5C3A1E'; ctx.lineWidth=2; ctx.beginPath(); ctx.roundRect(x,y,w,h,12); ctx.stroke();
+                ctx.restore();
+            }
+
+            function drawColumnHighlight(ctx, col) {
+                if (col<0) return;
+                const x=getBlockPixelX(col)-2, y=GRID_TOP-2, w=BLOCK_SIZE+4, h=ROWS*(BLOCK_SIZE+V_GAP)-V_GAP+4;
+                ctx.save(); ctx.fillStyle='rgba(255,255,255,0.18)'; ctx.strokeStyle='rgba(255,255,255,0.55)'; ctx.lineWidth=2; ctx.setLineDash([6,3]);
+                ctx.beginPath(); ctx.roundRect(x,y,w,h,10); ctx.fill(); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+            }
+
+            function render(ts) {
+                ctx.clearRect(0,0,W,H);
+                const bg=ctx.createLinearGradient(0,0,0,H); bg.addColorStop(0,'#1a1a35'); bg.addColorStop(0.5,'#1e1e3a'); bg.addColorStop(1,'#252540');
+                ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+                for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
+                    if (grid[r][c]===null || grid[r][c]===-1) continue;
+                    const isClear = clearingBlocks.some(b=>b.row===r&&b.col===c);
+                    let a=1, s=1, o=0;
+                    if (isClear && animStep?.type==='clear') {
+                        const p=animProgress;
+                        if (p<0.5) a = Math.floor(p*10)%2===0?0.4:1;
+                        else { const sp=(p-0.5)/0.5; s=1-sp*0.8; a=1-sp; o=sp*15; }
+                    }
+                    if (a>0.01 && s>0.01) drawBlock(ctx, r, c, grid[r][c], a, o, s);
+                }
+
+                if (woodenBlockActive && woodenBlockRow>=0) drawWoodenBlock(ctx, woodenBlockRow);
+
+                if (throwingBlock && animStep?.type==='throw') {
+                    const p=animProgress, e=1-Math.pow(1-p,3);
+                    const cy = throwingBlock.fromY + (throwingBlock.toY - throwingBlock.fromY)*e;
+                    ctx.save(); const g=ctx.createLinearGradient(0,cy,0,cy+BLOCK_SIZE);
+                    g.addColorStop(0,COLOR_LIGHT[throwingBlock.color]); g.addColorStop(0.4,COLORS[throwingBlock.color]); g.addColorStop(1,COLOR_DARK[throwingBlock.color]);
+                    ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(getBlockPixelX(throwingBlock.col), cy, BLOCK_SIZE, BLOCK_SIZE, 10); ctx.fill();
+                    ctx.restore();
+                }
+
+                if (pullingBlock && animStep?.type==='pull') {
+                    const p=animProgress, e=1-Math.pow(1-p,3);
+                    const fromY = getBlockPixelY(pullingBlock.fromRow);
+                    const toY = capybaraY + 8;
+                    const cy = fromY + (toY - fromY) * e;
+                    ctx.save(); const g=ctx.createLinearGradient(0,cy,0,cy+BLOCK_SIZE);
+                    g.addColorStop(0,COLOR_LIGHT[pullingBlock.color]); g.addColorStop(0.4,COLORS[pullingBlock.color]); g.addColorStop(1,COLOR_DARK[pullingBlock.color]);
+                    ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(getBlockPixelX(pullingBlock.col), cy, BLOCK_SIZE, BLOCK_SIZE, 10); ctx.fill();
+                    ctx.restore();
+                }
+
+                if (gamePhase==='dragging' && highlightedCol>=0) drawColumnHighlight(ctx, highlightedCol);
+                drawParticles(ctx);
+
+                if (!capybaraRunAway) {
+                    const playerScale = gamePhase === 'win_dance' ? 1.1 : 1;
+                    drawCapybara(ctx, capybaraX, capybaraY, playerScale, 0);
+                    if (actionPhase === 'throw' && heldBlockColor !== null && gamePhase !== 'win_dance') {
+                        drawHeldBlock(ctx, capybaraX, capybaraY+8, heldBlockColor);
+                    }
+                }
+
+                if (gamePhase === 'win_dance') {
+                    for (const c of herdCapybaras) drawCapybara(ctx, c.x, c.y, c.scale, c.rotation);
+                    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+                    ctx.font = 'bold 28px "Segoe UI"';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Wooden Block Destroyed!', W/2, H/2-50);
+                }
+
+                if (win) {
+                    ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#FFE66D'; ctx.font='bold 38px "Segoe UI"'; ctx.textAlign='center'; ctx.fillText('LEVEL CLEAR!', W/2, H/2-20);
+                    ctx.font='20px "Segoe UI"'; ctx.fillText(`Score: ${score}`, W/2, H/2+30);
+                } else if (gameOver) {
+                    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#fff'; ctx.font='bold 36px "Segoe UI"'; ctx.textAlign='center'; ctx.fillText('Game Over', W/2, H/2-10);
+                    ctx.fillText(`Score: ${score}`, W/2, H/2+35);
+                    ctx.fillStyle='#FFE66D'; ctx.font='bold 16px'; ctx.fillText('Tap to Restart', W/2, H/2+70);
+                }
+
+                if (!gameOver && !win) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+                    ctx.font = 'bold 14px "Segoe UI"';
+                    ctx.textAlign = 'center';
+                    if (actionPhase === 'pull') {
+                        ctx.fillText('Drag to select a column to PULL from', W/2, 20);
+                    } else {
+                        ctx.fillText('Drag to select a column to THROW into', W/2, 20);
+                    }
+                }
+
+                ctx.fillStyle='#fff'; ctx.font='bold 15px "Segoe UI"'; ctx.textAlign='right'; ctx.fillText(`Score: ${score}`, W-20, GRID_TOP-8);
+            }
+
+            function applyUpwardGravity() {
+                const moves = [];
+                for (let c=0; c<COLS; c++) {
+                    const blocks = [];
+                    for (let r=0; r<ROWS; r++) if (grid[r][c]!==null && grid[r][c]!==-1) blocks.push({row:r, color:grid[r][c]});
+                    for (let i=0; i<blocks.length; i++) {
+                        const tr = i;
+                        if (blocks[i].row !== tr) {
+                            moves.push({col:c, fromRow:blocks[i].row, toRow:tr});
+                            grid[tr][c] = blocks[i].color;
+                            grid[blocks[i].row][c] = null;
+                        }
+                    }
+                    for (let r=blocks.length; r<ROWS; r++) grid[r][c] = null;
+                }
+                return moves;
+            }
+
+            function shiftDownAndAddRow() {
+                if (woodenBlockActive) return;
+                for (let r=ROWS-1; r>0; r--) for (let c=0; c<COLS; c++) grid[r][c] = grid[r-1][c];
+                rowGenerationCount++;
+                if (rowGenerationCount === 4) {
+                    for (let c=0; c<COLS; c++) grid[0][c] = -1;
+                    woodenBlockActive = true; woodenBlockRow = 0;
+                } else {
+                    for (let c=0; c<COLS; c++) grid[0][c] = getRandomColor();
+                }
+                checkLoseCondition();
+            }
+
+            function hasNormalBlocks() {
+                for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) {
+                    if (grid[r][c] !== null && grid[r][c] !== -1) return true;
+                }
+                return false;
+            }
+
+            function checkLoseCondition() {
+                if (gameOver || win || woodenBlockActive) return;
+                if (grid[ROWS-1].some(cell => cell !== null && cell !== -1)) triggerLose();
+            }
+
+            function triggerLose() { gameOver = true; gamePhase = 'lose'; capybaraRunAway = true; }
+
+            function startWinDance() {
+                woodenBlockActive = false;
+                for (let r=0; r<ROWS; r++) for (let c=0; c<COLS; c++) grid[r][c] = null;
+                spawnWoodenParticles();
+                herdCapybaras = [];
+                for (let i = 0; i < 12; i++) {
+                    herdCapybaras.push({
+                        x: 40 + Math.random() * (W - 80),
+                        y: -60 - Math.random() * 120,
+                        vx: (Math.random() - 0.5) * 5,
+                        vy: Math.random() * 3 + 2,
+                        scale: 0.5 + Math.random() * 0.7,
+                        rotation: 0,
+                        rotationSpeed: (Math.random() - 0.5) * 0.15
+                    });
+                }
+                playerDanceDir = 1;
+                winDanceActive = true;
+                winDanceStartTime = performance.now();
+                gamePhase = 'win_dance';
+            }
+
+            function updateHerdAndPlayer(ts) {
+                if (!winDanceActive) return;
+                const playerSpeed = 4;
+                capybaraX += playerDanceDir * playerSpeed;
+                if (capybaraX >= W - 60) { capybaraX = W - 60; playerDanceDir = -1; }
+                else if (capybaraX <= 60) { capybaraX = 60; playerDanceDir = 1; }
+                for (const c of herdCapybaras) {
+                    c.x += c.vx; c.y += c.vy; c.vy += 0.2;
+                    if (c.x < 30) { c.x = 30; c.vx *= -0.8; }
+                    if (c.x > W - 30) { c.x = W - 30; c.vx *= -0.8; }
+                    if (c.y > capybaraY - 30) { c.y = capybaraY - 30; c.vy *= -0.6; }
+                    c.rotation += c.rotationSpeed;
+                    c.scale = 0.6 + Math.sin(ts / 300 + c.x) * 0.1;
+                }
+            }
+
+            function finalizeWin() {
+                winDanceActive = false;
+                herdCapybaras = [];
+                win = true;
+                gamePhase = 'win';
+            }
+
+            function initiatePull(col) {
+                const row = getBottomBlockRow(col);
+                if (row === -1) {
+                    gamePhase = 'idle';
+                    actionPhase = 'pull';
+                    return;
+                }
+                const color = grid[row][col];
+                grid[row][col] = null;
+                pullingBlock = { col, fromRow: row, color };
+                startAnimationStep({type:'pull', duration:250});
+            }
+
+            function completePull() {
+                heldBlockColor = pullingBlock.color;
+                pullingBlock = null;
+                actionPhase = 'throw';
+                gamePhase = 'idle';
+            }
+
+            function initiateThrow(col) {
+                if (isColumnFull(col)) {
+                    return;
+                }
+                const targetRow = getTopEmptyRow(col);
+                const color = heldBlockColor;
+                if (color === null) return;
+                heldBlockColor = null;
+                const fromY = capybaraY - 30, toY = getBlockPixelY(targetRow);
+                throwingBlock = {col, color, fromY, toY, targetRow};
+                startAnimationStep({type:'throw', duration:280, col, color, targetRow});
+            }
+
+            function handleThrowComplete(step) {
+                const {col, targetRow, color} = step;
+                grid[targetRow][col] = color;
+                throwingBlock = null;
+
+                if (woodenBlockActive && woodenBlockRow === 0 && targetRow === 1) {
+                    startWinDance();
+                    return;
+                }
+
+                const matches = findAllMatches();
+                if (matches.length > 0) {
+                    clearingBlocks = matches;
+                    startAnimationStep({type:'clear', duration:350});
+                } else {
+                    finalizeThrow();
+                }
+            }
+
+            function finalizeThrow() {
+                throwCount++;
+                if (throwCount % descendInterval === 0 && !woodenBlockActive) {
+                    shiftDownAndAddRow();
+                }
+                if (woodenBlockActive && !hasNormalBlocks() && heldBlockColor === null) {
+                    startWinDance();
+                    return;
+                }
+                checkLoseCondition();
+                if (!gameOver && !win && gamePhase !== 'win_dance') {
+                    actionPhase = 'pull';
+                    gamePhase = 'idle';
+                }
+            }
+
+            function startAnimationStep(step) {
+                animStep = step; animProgress = 0; animDuration = step.duration||300; animStartTime = performance.now();
+                gamePhase = 'animating';
+            }
+
+            function updateAnimation(ts) {
+                if (!animStep) return;
+                const elapsed = ts - animStartTime; animProgress = Math.min(elapsed / animDuration, 1);
+                if (animProgress >= 1) {
+                    const done = animStep; animStep = null; animProgress = 0;
+                    if (done.type === 'pull') completePull();
+                    else if (done.type === 'throw') handleThrowComplete(done);
+                    else if (done.type === 'clear') {
+                        for (const b of clearingBlocks) {
+                            if (grid[b.row][b.col]!==null && grid[b.row][b.col]!==-1) {
+                                spawnParticles(b.row, b.col, grid[b.row][b.col]);
+                                score += 10;
+                            }
+                            grid[b.row][b.col] = null;
+                        }
+                        clearingBlocks = [];
+                        const moves = applyUpwardGravity();
+                        if (moves.length) startAnimationStep({type:'gravity', duration:250});
+                        else finalizeThrow();
+                    } else if (done.type === 'gravity') finalizeThrow();
+                }
+            }
+
+            function handlePointerDown(e) {
+                if (gameOver || win || gamePhase==='win_dance') { if (gameOver||win) restartGame(); return; }
+                if (gamePhase !== 'idle') return;
+                const x = getEventX(e), y = getEventY(e);
+                if (Math.hypot(x-capybaraX, y-capybaraY) < 55 || y > capybaraY-30) {
+                    isDragging = true; gamePhase = 'dragging'; dragOffsetX = capybaraX - x;
+                    highlightedCol = getColumnFromX(capybaraX); e.preventDefault();
+                }
+            }
+
+            function handlePointerMove(e) {
+                if (!isDragging || gamePhase!=='dragging') return;
+                const x = getEventX(e);
+                capybaraX = Math.max(colCenterX[0]-15, Math.min(colCenterX[COLS-1]+15, x+dragOffsetX));
+                highlightedCol = getColumnFromX(capybaraX); e.preventDefault();
+            }
+
+            function handlePointerUp(e) {
+                if (!isDragging || gamePhase!=='dragging') return;
+                isDragging = false;
+                const col = highlightedCol>=0 ? highlightedCol : getColumnFromX(capybaraX);
+                capybaraX = colCenterX[col]; highlightedCol = -1;
+                if (actionPhase === 'pull') {
+                    initiatePull(col);
+                } else if (actionPhase === 'throw') {
+                    initiateThrow(col);
+                }
+                e.preventDefault();
+            }
+
+            function getEventX(e) {
+                const r = canvas.getBoundingClientRect(); const sx = W / r.width;
+                return (e.touches?.[0]?.clientX ?? e.changedTouches?.[0]?.clientX ?? e.clientX - r.left) * sx;
+            }
+            function getEventY(e) {
+                const r = canvas.getBoundingClientRect(); const sy = H / r.height;
+                return (e.touches?.[0]?.clientY ?? e.changedTouches?.[0]?.clientY ?? e.clientY - r.top) * sy;
+            }
+
+            function restartGame() {
+                grid = createEmptyGrid(); fillInitialGrid(2);
+                score = 0; gameOver = false; win = false; gamePhase = 'idle';
+                actionPhase = 'pull';
+                heldBlockColor = null;
+                throwingBlock = null; pullingBlock = null; clearingBlocks = []; particles = [];
+                isDragging = false; highlightedCol = -1; capybaraX = colCenterX[2]; capybaraY = 570;
+                throwCount = 0; rowGenerationCount = 0; woodenBlockActive = false; woodenBlockRow = -1;
+                capybaraRunAway = false; herdCapybaras = []; winDanceActive = false;
+            }
+
+            canvas.addEventListener('mousedown', handlePointerDown);
+            canvas.addEventListener('mousemove', handlePointerMove);
+            canvas.addEventListener('mouseup', handlePointerUp);
+            canvas.addEventListener('mouseleave', e => { if (isDragging) handlePointerUp(e); });
+            canvas.addEventListener('touchstart', handlePointerDown, {passive:false});
+            canvas.addEventListener('touchmove', handlePointerMove, {passive:false});
+            canvas.addEventListener('touchend', handlePointerUp, {passive:false});
+            canvas.addEventListener('touchcancel', e => { if (isDragging) handlePointerUp(e); });
+            canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+            function gameLoop(ts) {
+                if (gamePhase === 'win_dance') {
+                    updateHerdAndPlayer(ts);
+                    if (ts - winDanceStartTime > WIN_DANCE_DURATION) finalizeWin();
+                }
+                updateAnimation(ts);
+                updateParticles();
+                render(ts);
+                requestAnimationFrame(gameLoop);
+            }
+
+            function init() {
+                fillInitialGrid(2); capybaraX = colCenterX[2]; capybaraY = 570;
+                throwCount = 0; rowGenerationCount = 0; woodenBlockActive = false;
+                actionPhase = 'pull'; heldBlockColor = null;
+            }
+            init();
+            requestAnimationFrame(gameLoop);
+        })();
+    </script>
 </body>
 </html>
